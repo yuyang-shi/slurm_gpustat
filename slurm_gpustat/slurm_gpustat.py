@@ -655,7 +655,7 @@ def available(
         states = node_states()
     res = {key: val for key, val in resources.items()
            if states.get(key, "down") not in INACCESSIBLE}
-    usage = gpu_usage(resources=res)
+    usage = gpu_usage(resources=res, clusters=clusters)
     for subdict in usage.values():
         for gpu_type, node_dicts in subdict.items():
             for node_name, user_gpu_count in node_dicts.items():
