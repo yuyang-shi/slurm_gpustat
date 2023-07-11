@@ -350,12 +350,14 @@ def parse_cmd(cmd, split=True):
 
 
 @beartype
-def node_states(partition: Optional[str] = None) -> dict:
+def node_states(partition: Optional[str] = None, clusters: Optional[str] = None) -> dict:
     """Query SLURM for the state of each managed node.
 
     Args:
         partition: the partition/queue (or multiple, comma separated) of interest.
             By default None, which queries all available partitions.
+        clusters: the cluster (or multiple, comma separated) of interest.
+            By default None, which queries current cluster.
 
     Returns:
         a mapping between node names and SLURM states.
@@ -363,6 +365,8 @@ def node_states(partition: Optional[str] = None) -> dict:
     cmd = "sinfo --noheader"
     if partition:
         cmd += f" --partition={partition}"
+    if clusters:
+        cmd += f" --clusters={clusters}"
     rows = parse_cmd(cmd)
     states = {}
     for row in rows:
@@ -374,7 +378,7 @@ def node_states(partition: Optional[str] = None) -> dict:
 
 
 @functools.lru_cache(maxsize=64, typed=True)
-def occupancy_stats_for_node(node: str) -> dict:
+def occupancy_stats_for_node(node: str, clusters: Optional[str] = None) -> dict:
     """Query SLURM for the occupancy of a given node.
 
     Args:
@@ -384,6 +388,8 @@ def occupancy_stats_for_node(node: str) -> dict:
         a mapping between node names and occupancy stats.
     """
     cmd = f"scontrol show node {node}"
+    if clusters:
+        cmd += f" --clusters={clusters}"
     rows = [x.strip() for x in parse_cmd(cmd)]
     keys = ("AllocTRES", "CfgTRES")
     metrics = {}
@@ -415,6 +421,7 @@ def occupancy_stats_for_node(node: str) -> dict:
 
 @beartype
 def parse_all_gpus(partition: Optional[str] = None,
+                   clusters: Optional[str] = None,
                    default_gpus: int = 4,
                    default_gpu_name: str = "NONAME_GPU") -> dict:
     """Query SLURM for the number and types of GPUs under management.
@@ -422,6 +429,8 @@ def parse_all_gpus(partition: Optional[str] = None,
     Args:
         partition: the partition/queue (or multiple, comma separated) of interest.
             By default None, which queries all available partitions.
+        clusters: the cluster (or multiple, comma separated) of interest.
+            By default None, which queries current cluster.
         default_gpus: The number of GPUs estimated for nodes that have incomplete SLURM
             meta data.
         default_gpu_name: The name of the GPU for nodes that have incomplete SLURM meta
@@ -433,12 +442,14 @@ def parse_all_gpus(partition: Optional[str] = None,
     cmd = "sinfo -o '%1000N|%1000G' --noheader"
     if partition:
         cmd += f" --partition={partition}"
+    if clusters:
+        cmd += f" --clusters={clusters}"
     rows = parse_cmd(cmd)
     resources = defaultdict(list)
 
     # Debug the regular expression below at
     # https://regex101.com/r/RHYM8Z/3
-    p = re.compile(r'gpu:(?:(\S*):)?(\d*)(?:\(\S*\))?\s*')
+    p = re.compile(r'gpu:(?:(\S*):)?(\d*)(?:\(\S*\))?\s*$')
 
     for row in rows:
         node_str, resource_strs = row.split("|")
@@ -514,7 +525,7 @@ def summary(mode: str, resources: dict = None, states: dict = None):
 
 
 @beartype
-def gpu_usage(resources: dict, partition: Optional[str] = None) -> dict:
+def gpu_usage(resources: dict, partition: Optional[str] = None, clusters: Optional[str] = None) -> dict:
     """Build a data structure of the cluster resource usage, organised by user.
 
     Args:
@@ -532,7 +543,11 @@ def gpu_usage(resources: dict, partition: Optional[str] = None) -> dict:
     cmd = f"squeue -O {resource_flag}:100,nodelist:100,username:100,jobid:100 --noheader"
     if partition:
         cmd += f" --partition={partition}"
+    if clusters:
+        cmd += f" --clusters={clusters}"
     detailed_job_cmd = "scontrol show jobid -dd %s"
+    if clusters:
+        detailed_job_cmd += f" --clusters={clusters}"
     rows = parse_cmd(cmd)
     usage = defaultdict(dict)
     for row in rows:
@@ -588,7 +603,7 @@ def gpu_usage(resources: dict, partition: Optional[str] = None) -> dict:
 
 
 @beartype
-def in_use(resources: dict = None, partition: Optional[str] = None):
+def in_use(resources: dict = None, partition: Optional[str] = None, clusters: Optional[str] = None):
     """Print a short summary of the resources that are currently used by each user.
 
     Args:
@@ -596,7 +611,7 @@ def in_use(resources: dict = None, partition: Optional[str] = None):
     """
     if not resources:
         resources = parse_all_gpus()
-    usage = gpu_usage(resources, partition=partition)
+    usage = gpu_usage(resources, partition=partition, clusters=clusters)
     aggregates = {}
     for user, subdict in usage.items():
         aggregates[user] = {}
@@ -618,6 +633,7 @@ def available(
         resources: dict = None,
         states: dict = None,
         verbose: bool = False,
+        clusters: Optional[str] = None
 ):
     """Print a short summary of resources available on the cluster.
 
@@ -658,7 +674,7 @@ def available(
             for x in counts_for_gpu_type:
                 node, count = x["node"], x["count"]
                 if count:
-                    occupancy = occupancy_stats_for_node(node)
+                    occupancy = occupancy_stats_for_node(node, clusters=clusters)
                     users = [user for user in usage if node in usage[user].get(key, [])]
                     details = [f"{key}: {val}" for key, val in sorted(occupancy.items())]
                     details = f"[{', '.join(details)}] [{','.join(users)}]"
@@ -668,7 +684,7 @@ def available(
 
 
 @beartype
-def all_info(color: int, verbose: bool, partition: Optional[str] = None):
+def all_info(color: int, verbose: bool, partition: Optional[str] = None, clusters: Optional[str] = None):
     """Print a collection of summaries about SLURM gpu usage, including: all nodes
     managed by the cluster, nodes that are currently accesible and gpu usage for each
     active user.
@@ -676,6 +692,8 @@ def all_info(color: int, verbose: bool, partition: Optional[str] = None):
     Args:
         partition: the partition/queue (or multiple, comma separated) of interest.
             By default None, which queries all available partitions.
+        clusters: the cluster (or multiple, comma separated) of interest.
+            By default None, which queries current cluster.
     """
     divider, slurm_str = "---------------------------------", "SLURM"
     if color:
@@ -685,14 +703,14 @@ def all_info(color: int, verbose: bool, partition: Optional[str] = None):
     print(divider)
     print(f"Under {slurm_str} management")
     print(divider)
-    resources = parse_all_gpus(partition=partition)
-    states = node_states(partition=partition)
+    resources = parse_all_gpus(partition=partition, clusters=clusters)
+    states = node_states(partition=partition, clusters=clusters)
     for mode in ("up", "accessible"):
         summary(mode=mode, resources=resources, states=states)
         print(divider)
-    in_use(resources, partition=partition)
+    in_use(resources, partition=partition, clusters=clusters)
     print(divider)
-    available(resources=resources, states=states, verbose=verbose)
+    available(resources=resources, states=states, verbose=verbose, clusters=clusters)
     print(divider)
 
 
@@ -708,6 +726,9 @@ def main():
     parser.add_argument("-p", "--partition", default=None,
                         help=("the partition/queue (or multiple, comma separated) of"
                               " interest. By default set to all available partitions."))
+    parser.add_argument("-M", "--clusters", default=None,
+                        help=("the cluster (or multiple, comma separated) of"
+                              " interest. By default set to current cluster."))
     parser.add_argument("--log_path",
                         default=Path.home() / "data/daemons/logs/slurm_gpustat.log",
                         help="the location where daemon log files will be stored")
@@ -722,7 +743,7 @@ def main():
     args = parser.parse_args()
 
     if args.action == "current":
-        all_info(color=args.color, verbose=args.verbose, partition=args.partition)
+        all_info(color=args.color, verbose=args.verbose, partition=args.partition, clusters=args.clusters)
     elif args.action == "history":
         data = GPUStatDaemon.deserialize_usage(args.log_path)
         historical_summary(data)
